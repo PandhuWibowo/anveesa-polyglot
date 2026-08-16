@@ -1,4 +1,4 @@
-use eframe::egui::{self, epaint::Mesh, Color32, CornerRadius, Rect, Shape, Stroke};
+use eframe::egui::{self, emath::NumExt, epaint::Mesh, Color32, CornerRadius, Rect, Shape, Stroke};
 
 // Meta-inspired palette: near-black surfaces, blue → violet gradient accent.
 pub const BG: Color32 = Color32::from_rgb(8, 8, 12);
@@ -66,23 +66,51 @@ fn style_up(style: &mut egui::Style) {
         w.corner_radius = CornerRadius::same(10);
     }
 
-    style.spacing.item_spacing = egui::vec2(10.0, 8.0);
-    style.spacing.button_padding = egui::vec2(14.0, 7.0);
-    style.spacing.window_margin = egui::Margin::same(16);
-    style.spacing.menu_margin = egui::Margin::same(10);
+    style.spacing.item_spacing = egui::vec2(6.0, 6.0);
+    style.spacing.button_padding = egui::vec2(10.0, 5.0);
+    style.spacing.window_margin = egui::Margin::same(12);
+    style.spacing.menu_margin = egui::Margin::same(8);
 }
 
-/// A pill-shaped button that fills with the blue→violet gradient when
-/// `active`, or a subtle outlined ghost style when not. Returns the response
-/// so callers can check `.clicked()`.
-pub fn pill_toggle(ui: &mut egui::Ui, active: bool, text: &str) -> egui::Response {
+/// Compact square icon button (~28px), no visible label — pair with
+/// `.on_hover_text()` for the informative part without spending width on
+/// text. Gradient fill when `active`, ghost outline otherwise.
+pub fn icon_toggle(ui: &mut egui::Ui, active: bool, icon: &str) -> egui::Response {
+    let size = egui::vec2(28.0, 28.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+
+    if ui.is_rect_visible(rect) {
+        let hovered = response.hovered();
+        if active {
+            gradient_rect(ui.painter(), rect, 8.0);
+        } else {
+            let fill = if hovered { ELEVATED_HOVER } else { ELEVATED };
+            let stroke = if hovered { Stroke::new(1.2, BLUE) } else { Stroke::new(1.0, BORDER) };
+            ui.painter().rect_filled(rect, 8.0, fill);
+            ui.painter().rect_stroke(rect, 8.0, stroke, egui::StrokeKind::Inside);
+        }
+        let text_color = if active { Color32::WHITE } else { TEXT };
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            icon,
+            egui::FontId::proportional(14.0),
+            text_color,
+        );
+    }
+    response
+}
+
+/// Small pill chip (compact version of `pill_toggle`, for short labels like
+/// language codes) — tighter padding, smaller font.
+pub fn chip_toggle(ui: &mut egui::Ui, active: bool, text: &str) -> egui::Response {
     let galley = ui.painter().layout_no_wrap(
         text.to_string(),
-        egui::FontId::proportional(14.0),
+        egui::FontId::proportional(12.5),
         TEXT,
     );
-    let padding = egui::vec2(16.0, 9.0);
-    let size = galley.size() + padding * 2.0;
+    let padding = egui::vec2(10.0, 5.0);
+    let size = (galley.size() + padding * 2.0).at_least(egui::vec2(28.0, 26.0));
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
 
     if ui.is_rect_visible(rect) {
@@ -97,11 +125,7 @@ pub fn pill_toggle(ui: &mut egui::Ui, active: bool, text: &str) -> egui::Respons
             ui.painter().rect_stroke(rect, radius, stroke, egui::StrokeKind::Inside);
         }
         let text_color = if active { Color32::WHITE } else { TEXT };
-        ui.painter().galley(
-            rect.center() - galley.size() / 2.0,
-            galley,
-            text_color,
-        );
+        ui.painter().galley(rect.center() - galley.size() / 2.0, galley, text_color);
     }
     response
 }

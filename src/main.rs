@@ -83,8 +83,8 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Anveesa Polyglot")
-            .with_inner_size([460.0, 560.0])
-            .with_min_inner_size([320.0, 240.0])
+            .with_inner_size([360.0, 420.0])
+            .with_min_inner_size([300.0, 220.0])
             .with_always_on_top(),
         ..Default::default()
     };

@@ -752,36 +752,30 @@ impl eframe::App for App {
         }
 
         egui::Panel::top("controls")
-            .frame(egui::Frame::NONE.fill(theme::PANEL).inner_margin(egui::Margin::symmetric(16, 12)))
+            .frame(egui::Frame::NONE.fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 10)))
             .show(ui, |ui| {
-            // --- brand header: gradient mark + wordmark ---
+            // row 1: capture source (the OS titlebar already shows the app name,
+            // so no in-app title row — every pixel here is a live control)
             ui.horizontal(|ui| {
-                let mark_size = egui::vec2(26.0, 26.0);
+                let mark_size = egui::vec2(20.0, 20.0);
                 let (rect, _) = ui.allocate_exact_size(mark_size, egui::Sense::hover());
-                theme::gradient_rect(ui.painter(), rect, 8.0);
+                theme::gradient_rect(ui.painter(), rect, 6.0);
                 ui.painter().text(
                     rect.center(),
                     egui::Align2::CENTER_CENTER,
                     "文",
-                    egui::FontId::proportional(15.0),
+                    egui::FontId::proportional(11.0),
                     egui::Color32::WHITE,
                 );
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new("Anveesa Polyglot").size(17.0).strong().color(theme::TEXT));
-            });
-            ui.add_space(10.0);
-
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("CAPTURE").small().color(theme::TEXT_MUTED));
                 let selected_label = s
                     .selected
                     .as_ref()
                     .map(|t| t.label.clone())
-                    .unwrap_or_else(|| "— choose a source —".into());
+                    .unwrap_or_else(|| "Choose a source…".into());
                 let targets = s.targets.clone();
                 egui::ComboBox::from_id_salt("target_picker")
                     .selected_text(selected_label)
-                    .width(260.0)
+                    .width(ui.available_width() - 34.0)
                     .show_ui(ui, |ui| {
                         for t in &targets {
                             let checked = s.selected.as_ref() == Some(t);
@@ -794,88 +788,87 @@ impl eframe::App for App {
                     s.targets = capture::list_targets();
                 }
             });
-            ui.add_space(8.0);
 
+            // row 2: target language + the full action toolbar, one line
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("TO").small().color(theme::TEXT_MUTED));
                 ui.add(
-                    egui::TextEdit::singleline(&mut s.cfg.target_lang).desired_width(110.0),
+                    egui::TextEdit::singleline(&mut s.cfg.target_lang).desired_width(76.0),
                 );
-                if theme::pill_toggle(ui, s.cfg.target_lang == "English", "EN").clicked() {
+                if theme::chip_toggle(ui, s.cfg.target_lang == "English", "EN").clicked() {
                     s.cfg.target_lang = "English".into();
                 }
-                if theme::pill_toggle(ui, s.cfg.target_lang == "Indonesian", "ID").clicked() {
+                if theme::chip_toggle(ui, s.cfg.target_lang == "Indonesian", "ID").clicked() {
                     s.cfg.target_lang = "Indonesian".into();
                 }
-            });
-            ui.add_space(10.0);
 
-            ui.horizontal_wrapped(|ui| {
-                let pause_label = if s.paused { "▶ Resume" } else { "⏸ Pause" };
-                if theme::pill_toggle(ui, s.paused, pause_label).clicked() {
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(2.0);
+
+                if theme::icon_toggle(ui, s.paused, if s.paused { "▶" } else { "⏸" })
+                    .on_hover_text(if s.paused { "Resume" } else { "Pause" })
+                    .clicked()
+                {
                     s.paused = !s.paused;
                 }
                 let job_running = s.file_job.as_ref().is_some_and(|j| j.running);
                 let r = ui
-                    .add_enabled_ui(!job_running, |ui| theme::pill_toggle(ui, false, "📄 File"))
+                    .add_enabled_ui(!job_running, |ui| theme::icon_toggle(ui, false, "📄"))
                     .inner
-                    .on_hover_text("Translate a file (or drop one on this window)");
+                    .on_hover_text("File — translate a file (or drop one on this window)");
                 if r.clicked() {
                     pick_file = true;
                 }
                 let numbers_running = s.numbers_job.as_ref().is_some_and(|j| j.running);
                 let r = ui
-                    .add_enabled_ui(!numbers_running, |ui| theme::pill_toggle(ui, false, "🔢 Live Sheet"))
+                    .add_enabled_ui(!numbers_running, |ui| theme::icon_toggle(ui, false, "🔢"))
                     .inner
                     .on_hover_text(
-                        "Translate the sheet currently open in Numbers, in place \
-                         (stacks original + translation in each cell)",
+                        "Live Sheet — translate the sheet open in Numbers, in place",
                     );
                 if r.clicked() {
                     start_numbers = true;
                 }
                 let pdf_running = s.pdf_job.as_ref().is_some_and(|j| j.running);
                 let r = ui
-                    .add_enabled_ui(!pdf_running, |ui| theme::pill_toggle(ui, false, "📕 PDF"))
+                    .add_enabled_ui(!pdf_running, |ui| theme::icon_toggle(ui, false, "📕"))
                     .inner
-                    .on_hover_text(
-                        "Translate the PDF currently open in Preview, in place: \
-                         covers each Chinese line with its translation at the same \
-                         position, saved into the same file (removable annotations)",
-                    );
+                    .on_hover_text("PDF — translate the PDF open in Preview, in place");
                 if r.clicked() {
                     start_pdf = true;
                 }
                 let captions_on = self.engine.is_some();
-                if theme::pill_toggle(ui, captions_on, "🎤 Captions")
-                    .on_hover_text("Live-translate system audio (Zoom/Meet speech)")
+                if theme::icon_toggle(ui, captions_on, "🎤")
+                    .on_hover_text("Captions — live-translate system audio (Zoom/Meet)")
                     .clicked()
                 {
                     toggle_captions = true;
                 }
                 let mask_on = self.mask_engine.is_some();
-                if theme::pill_toggle(ui, mask_on, "🎭 Mask")
-                    .on_hover_text(
-                        "Cover the original text on the selected window/screen with the \
-                         translation, positioned in place (needs a Capture target picked above)",
-                    )
+                if theme::icon_toggle(ui, mask_on, "🎭")
+                    .on_hover_text("Mask — cover on-screen text with the translation, in place")
                     .clicked()
                 {
                     toggle_mask = true;
                 }
-                if theme::pill_toggle(ui, self.show_settings, "⚙").clicked() {
-                    self.show_settings = !self.show_settings;
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if theme::icon_toggle(ui, self.show_settings, "⚙")
+                        .on_hover_text("Settings")
+                        .clicked()
+                    {
+                        self.show_settings = !self.show_settings;
+                    }
+                });
             });
 
             if self.show_settings {
-                ui.add_space(10.0);
+                ui.add_space(6.0);
                 egui::Frame::NONE
                     .fill(theme::ELEVATED)
                     .corner_radius(egui::CornerRadius::same(10))
-                    .inner_margin(egui::Margin::same(12))
+                    .inner_margin(egui::Margin::same(10))
                     .show(ui, |ui| {
-                        egui::Grid::new("settings").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
+                        egui::Grid::new("settings").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
                             ui.label("Model");
                             ui.text_edit_singleline(&mut s.cfg.model);
                             ui.end_row();
@@ -898,8 +891,8 @@ impl eframe::App for App {
                                 .on_hover_text("Whisper code: zh, ja, ko… or auto");
                             ui.end_row();
                         });
-                        ui.add_space(8.0);
-                        if theme::pill_toggle(ui, false, "💾 Save settings").clicked() {
+                        ui.add_space(6.0);
+                        if theme::chip_toggle(ui, false, "💾 Save settings").clicked() {
                             if let Err(e) = s.cfg.save() {
                                 s.status = format!("⚠ Could not save config: {e:#}");
                             } else {
@@ -968,7 +961,7 @@ impl eframe::App for App {
         });
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(theme::BG).inner_margin(egui::Margin::same(20)))
+            .frame(egui::Frame::NONE.fill(theme::BG).inner_margin(egui::Margin::same(14)))
             .show(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                 if s.translation.is_empty() {
@@ -977,31 +970,30 @@ impl eframe::App for App {
                         avail,
                         egui::Layout::top_down(egui::Align::Center),
                         |ui| {
-                            ui.add_space((avail.y * 0.32).max(24.0));
-                            let mark = egui::vec2(64.0, 64.0);
+                            ui.add_space((avail.y * 0.18).max(16.0));
+                            let mark = egui::vec2(40.0, 40.0);
                             let (rect, _) = ui.allocate_exact_size(mark, egui::Sense::hover());
-                            theme::gradient_rect(ui.painter(), rect, 20.0);
+                            theme::gradient_rect(ui.painter(), rect, 12.0);
                             ui.painter().text(
                                 rect.center(),
                                 egui::Align2::CENTER_CENTER,
-                                "文 → A",
-                                egui::FontId::proportional(20.0),
+                                "文→A",
+                                egui::FontId::proportional(12.0),
                                 egui::Color32::WHITE,
                             );
-                            ui.add_space(18.0);
+                            ui.add_space(10.0);
                             ui.label(
                                 egui::RichText::new("Translations will appear here")
-                                    .size(19.0)
+                                    .size(14.5)
                                     .strong()
                                     .color(theme::TEXT),
                             );
-                            ui.add_space(6.0);
+                            ui.add_space(3.0);
                             ui.label(
                                 egui::RichText::new(
-                                    "Pick the window or screen your teammate is sharing,\n\
-                                     and keep this overlay beside it.",
+                                    "Pick a source above, or use File / PDF / Sheet / Mask.",
                                 )
-                                .size(13.5)
+                                .size(11.5)
                                 .color(theme::TEXT_MUTED),
                             );
                         },
