@@ -1,7 +1,7 @@
 use crate::capture::{self, CaptureTarget};
 use crate::captions::{Caption, CaptionEngine};
 use crate::config::Config;
-use crate::{doc, mask, numbers, ocr, pdfmask, sheet, theme, translate};
+use crate::{doc, mask, numbers, ocr, pdfmask, sheet, stt, theme, translate};
 use eframe::egui;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -74,6 +74,9 @@ pub struct Shared {
     pub file_window_requested: bool,
     pub mask_lines: Vec<crate::mask::MaskLine>,
     pub mask_target_rect: Option<(f32, f32, f32, f32)>,
+    /// The actual captured frame, painted as the overlay's background (see
+    /// mask.rs — this replaced relying on real window transparency).
+    pub mask_texture: Option<egui::TextureHandle>,
 }
 
 /// Directory watched for queued file paths (written by the Finder Quick
@@ -92,6 +95,7 @@ pub struct App {
     engine: Option<CaptionEngine>,
     mask_engine: Option<mask::MaskEngine>,
     show_file_window: bool,
+    custom_lang_input: String,
 }
 
 impl App {
@@ -125,6 +129,7 @@ impl App {
             file_window_requested: false,
             mask_lines: Vec::new(),
             mask_target_rect: None,
+            mask_texture: None,
         }));
 
         spawn_worker(shared.clone(), cc.egui_ctx.clone());
@@ -137,6 +142,7 @@ impl App {
             engine: None,
             mask_engine: None,
             show_file_window: false,
+            custom_lang_input: String::new(),
         }
     }
 }
@@ -775,7 +781,7 @@ impl eframe::App for App {
                 let targets = s.targets.clone();
                 egui::ComboBox::from_id_salt("target_picker")
                     .selected_text(selected_label)
-                    .width(ui.available_width() - 34.0)
+                    .width((ui.available_width() - 34.0).max(70.0))
                     .show_ui(ui, |ui| {
                         for t in &targets {
                             let checked = s.selected.as_ref() == Some(t);
@@ -789,8 +795,9 @@ impl eframe::App for App {
                 }
             });
 
-            // row 2: target language + the full action toolbar, one line
-            ui.horizontal(|ui| {
+            // row 2: target language + the full action toolbar — wraps onto
+            // extra lines when the window is narrower than everything fits
+            ui.horizontal_wrapped(|ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut s.cfg.target_lang).desired_width(76.0),
                 );
@@ -851,14 +858,13 @@ impl eframe::App for App {
                 {
                     toggle_mask = true;
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if theme::icon_toggle(ui, self.show_settings, "⚙")
-                        .on_hover_text("Settings")
-                        .clicked()
-                    {
-                        self.show_settings = !self.show_settings;
-                    }
-                });
+                ui.separator();
+                if theme::icon_toggle(ui, self.show_settings, "⚙")
+                    .on_hover_text("Settings")
+                    .clicked()
+                {
+                    self.show_settings = !self.show_settings;
+                }
             });
 
             if self.show_settings {
@@ -868,6 +874,7 @@ impl eframe::App for App {
                     .corner_radius(egui::CornerRadius::same(10))
                     .inner_margin(egui::Margin::same(10))
                     .show(ui, |ui| {
+                        egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
                         egui::Grid::new("settings").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
                             ui.label("Model");
                             ui.text_edit_singleline(&mut s.cfg.model);
@@ -886,10 +893,70 @@ impl eframe::App for App {
                             ui.label("Whisper model");
                             ui.text_edit_singleline(&mut s.cfg.whisper_model);
                             ui.end_row();
-                            ui.label("Spoken lang");
-                            ui.text_edit_singleline(&mut s.cfg.stt_lang)
-                                .on_hover_text("Whisper code: zh, ja, ko… or auto");
-                            ui.end_row();
+                        });
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new("SPOKEN LANGUAGES").small().color(theme::TEXT_MUTED),
+                        );
+                        ui.label(
+                            egui::RichText::new(
+                                "Pick as many as you like — Whisper detects which one is \
+                                 spoken per utterance, so mixed-language meetings just work. \
+                                 Pick exactly one only if every speaker uses that language, \
+                                 for slightly better accuracy.",
+                            )
+                            .size(11.0)
+                            .color(theme::TEXT_MUTED),
+                        );
+                        ui.add_space(4.0);
+
+                        let mut selected: Vec<String> = s
+                            .cfg
+                            .stt_lang
+                            .split(',')
+                            .map(|c| c.trim().to_string())
+                            .filter(|c| !c.is_empty())
+                            .collect();
+                        let is_auto = selected.is_empty() || selected.iter().any(|c| c == "auto");
+
+                        ui.horizontal_wrapped(|ui| {
+                            if theme::chip_toggle(ui, is_auto, "Auto — any language").clicked() {
+                                s.cfg.stt_lang = "auto".into();
+                            }
+                            ui.separator();
+                            for (code, name) in stt::COMMON_LANGUAGES {
+                                let active = !is_auto && selected.iter().any(|c| c == code);
+                                if theme::chip_toggle(ui, active, name).clicked() {
+                                    selected.retain(|c| c != "auto");
+                                    if active {
+                                        selected.retain(|c| c != *code);
+                                    } else {
+                                        selected.push((*code).to_string());
+                                    }
+                                    s.cfg.stt_lang =
+                                        if selected.is_empty() { "auto".into() } else { selected.join(",") };
+                                }
+                            }
+                        });
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("+ other code").small().color(theme::TEXT_MUTED));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.custom_lang_input)
+                                    .desired_width(60.0)
+                                    .hint_text("e.g. sw"),
+                            );
+                            if theme::chip_toggle(ui, false, "Add").clicked()
+                                && !self.custom_lang_input.trim().is_empty()
+                            {
+                                let code = self.custom_lang_input.trim().to_lowercase();
+                                selected.retain(|c| c != "auto");
+                                if !selected.iter().any(|c| *c == code) {
+                                    selected.push(code);
+                                }
+                                s.cfg.stt_lang = selected.join(",");
+                                self.custom_lang_input.clear();
+                            }
                         });
                         ui.add_space(6.0);
                         if theme::chip_toggle(ui, false, "💾 Save settings").clicked() {
@@ -899,6 +966,7 @@ impl eframe::App for App {
                                 s.status = "Settings saved".into();
                             }
                         }
+                        }); // ScrollArea
                     });
             }
         });
@@ -943,10 +1011,19 @@ impl eframe::App for App {
         egui::Panel::bottom("status")
             .frame(egui::Frame::NONE.fill(theme::PANEL).inner_margin(egui::Margin::symmetric(16, 8)))
             .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(&s.status).small().color(theme::TEXT_MUTED));
-                if let Some(t) = s.last_update {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            egui::Sides::new().show(
+                ui,
+                |ui| {
+                    // truncates instead of overlapping the timestamp when narrow
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&s.status).small().color(theme::TEXT_MUTED),
+                        )
+                        .truncate(),
+                    );
+                },
+                |ui| {
+                    if let Some(t) = s.last_update {
                         ui.label(
                             egui::RichText::new(format!(
                                 "updated {}s ago",
@@ -955,9 +1032,9 @@ impl eframe::App for App {
                             .small()
                             .color(theme::TEXT_MUTED),
                         );
-                    });
-                }
-            });
+                    }
+                },
+            );
         });
 
         egui::CentralPanel::default()
@@ -1022,6 +1099,7 @@ impl eframe::App for App {
             egui::Window::new("📕 PDF in place")
                 .default_size([340.0, 110.0])
                 .show(&ctx, |ui| {
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     ui.label(egui::RichText::new(&job.doc_name).strong());
                     if job.running {
                         ui.horizontal(|ui| {
@@ -1051,6 +1129,7 @@ impl eframe::App for App {
                             .weak(),
                         );
                     }
+                    }); // ScrollArea
                 });
         }
 
@@ -1058,6 +1137,7 @@ impl eframe::App for App {
             egui::Window::new("🔢 Live Sheet")
                 .default_size([340.0, 120.0])
                 .show(&ctx, |ui| {
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     ui.label(egui::RichText::new(&job.doc_name).strong());
                     ui.label(egui::RichText::new(&job.sheet_name).weak());
                     if job.running {
@@ -1087,6 +1167,7 @@ impl eframe::App for App {
                             .weak(),
                         );
                     }
+                    }); // ScrollArea
                 });
         }
 
@@ -1207,9 +1288,28 @@ impl eframe::App for App {
                     let mut s = self.shared.lock().unwrap();
                     s.mask_lines.clear();
                     s.mask_target_rect = None;
+                    s.mask_texture = None;
                 }
                 None => {
-                    self.mask_engine = Some(mask::MaskEngine::start(self.shared.clone(), ctx.clone()));
+                    // window-specific targets aren't reliably enumerable on
+                    // this macOS version (see capture.rs), so "just pick a
+                    // window" isn't a safe default — but a monitor always
+                    // works, so auto-pick one rather than silently doing
+                    // nothing when the user hasn't chosen a source yet.
+                    let have_target = {
+                        let mut s = self.shared.lock().unwrap();
+                        if s.selected.is_none() {
+                            s.selected = s.targets.iter().find(|t| t.is_monitor).cloned();
+                        }
+                        if s.selected.is_none() {
+                            s.status = "⚠ No screen found to capture".into();
+                        }
+                        s.selected.is_some()
+                    };
+                    if have_target {
+                        self.mask_engine =
+                            Some(mask::MaskEngine::start(self.shared.clone(), ctx.clone()));
+                    }
                 }
             }
         }
@@ -1223,6 +1323,17 @@ impl eframe::App for App {
 
     fn on_exit(&mut self) {
         let _ = self.shared.lock().unwrap().cfg.save();
+    }
+
+    /// eframe's default is near-opaque black (rgba 12,12,12,180) — applied to
+    /// every viewport, which silently defeats `with_transparent(true)` on the
+    /// 🎭 Mask overlay (it renders as a solid dark rectangle instead of a true
+    /// see-through window). Every panel in the main window already paints its
+    /// own opaque background explicitly (`theme::PANEL`/`theme::BG` frame
+    /// fills), so a fully transparent GPU clear doesn't change its look —
+    /// it only fixes the overlay, which has nothing else to fall back on.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0, 0.0, 0.0, 0.0]
     }
 }
 

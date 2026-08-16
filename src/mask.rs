@@ -36,6 +36,19 @@ impl Drop for MaskEngine {
     }
 }
 
+/// Whole-screen capture inevitably sees macOS menu-bar icons (Wi-Fi, battery,
+/// clock glyphs — misread by OCR as 1-2 stray letters) and this very app's
+/// own window ("Anveesa Polyglot" is on screen too). Neither is worth
+/// translating or boxing over.
+fn looks_like_ui_noise(text: &str) -> bool {
+    let t = text.trim();
+    if t.eq_ignore_ascii_case("Anveesa Polyglot") || t.eq_ignore_ascii_case("Anveesa") {
+        return true;
+    }
+    let char_count = t.chars().count();
+    char_count <= 2 && t.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
 /// Vision's box is bottom-left-origin, normalized; window overlays want
 /// top-left-origin fractions to match typical screen coordinates.
 fn flip_to_top_left(bbox: [f32; 4]) -> (f32, f32, f32, f32) {
@@ -57,10 +70,10 @@ fn mask_loop(stop: &AtomicBool, shared: &Arc<Mutex<Shared>>, ctx: &egui::Context
 
         let result = capture::capture(&target).and_then(|img| {
             let lines = ocr::recognize(&img)?;
-            Ok(lines)
+            Ok((img, lines))
         });
-        let lines = match result {
-            Ok(l) => l,
+        let (img, lines) = match result {
+            Ok(v) => v,
             Err(e) => {
                 shared.lock().unwrap().status = format!("⚠ {e:#}");
                 ctx.request_repaint();
@@ -69,9 +82,28 @@ fn mask_loop(stop: &AtomicBool, shared: &Arc<Mutex<Shared>>, ctx: &egui::Context
             }
         };
 
+        // Paint the actual captured frame as the overlay's background instead
+        // of relying on true OS-level window transparency: multi-viewport
+        // transparency compositing turned out to be unreliable in practice
+        // (worked in some window arrangements, rendered solid black in
+        // others) — a snapshot texture behind the translated boxes is
+        // correct every time, at the cost of the background only updating
+        // once per capture cycle instead of being truly live.
+        let color_image = egui::ColorImage::from_rgba_unmultiplied(
+            [img.width() as usize, img.height() as usize],
+            img.as_raw(),
+        );
+        let texture = ctx.load_texture("mask_bg", color_image, egui::TextureOptions::LINEAR);
+        {
+            let mut s = shared.lock().unwrap();
+            s.mask_texture = Some(texture);
+            s.mask_target_rect = window_rect(&target);
+        }
+
         let kept: Vec<_> = lines
             .into_iter()
             .filter(|l| l.confidence >= cfg.min_confidence && !l.text.trim().is_empty())
+            .filter(|l| !looks_like_ui_noise(&l.text))
             .collect();
 
         // skip re-translating if the visible text hasn't changed since last cycle
@@ -82,6 +114,9 @@ fn mask_loop(stop: &AtomicBool, shared: &Arc<Mutex<Shared>>, ctx: &egui::Context
         }
         let hash = hasher.finish();
         if hash == last_text_hash {
+            // text is the same, but the background snapshot just refreshed —
+            // repaint so the new pixels (e.g. scrolled position) show up
+            ctx.request_repaint();
             std::thread::sleep(Duration::from_secs_f32(interval.max(1.0)));
             continue;
         }
@@ -89,7 +124,6 @@ fn mask_loop(stop: &AtomicBool, shared: &Arc<Mutex<Shared>>, ctx: &egui::Context
         if kept.is_empty() {
             let mut s = shared.lock().unwrap();
             s.mask_lines.clear();
-            s.mask_target_rect = window_rect(&target);
             drop(s);
             ctx.request_repaint();
             last_text_hash = hash;
@@ -116,7 +150,6 @@ fn mask_loop(stop: &AtomicBool, shared: &Arc<Mutex<Shared>>, ctx: &egui::Context
                     .collect();
                 let mut s = shared.lock().unwrap();
                 s.mask_lines = mask_lines;
-                s.mask_target_rect = window_rect(&target);
                 s.status = format!("✓ Masking {} line(s)", texts.len());
                 last_text_hash = hash;
             }
@@ -158,12 +191,16 @@ fn window_rect(target: &CaptureTarget) -> Option<(f32, f32, f32, f32)> {
     }
 }
 
-/// Paints the mask overlay as a borderless, transparent, click-through
-/// viewport positioned exactly over the target window/screen.
+/// Paints the mask overlay as a borderless, click-through viewport
+/// positioned exactly over the target window/screen. The background is the
+/// actual captured frame (not a see-through window — see the comment in
+/// `mask_loop` for why), so the result is correct regardless of window
+/// manager/compositor quirks; it just means the backdrop is a snapshot that
+/// refreshes once per capture cycle rather than a live view.
 pub fn show_mask_viewport(ctx: &egui::Context, shared: &Arc<Mutex<Shared>>) {
-    let (rect, lines) = {
+    let (rect, lines, texture) = {
         let s = shared.lock().unwrap();
-        (s.mask_target_rect, s.mask_lines.clone())
+        (s.mask_target_rect, s.mask_lines.clone(), s.mask_texture.clone())
     };
     let Some((x, y, w, h)) = rect else { return };
     if w <= 0.0 || h <= 0.0 {
@@ -176,7 +213,6 @@ pub fn show_mask_viewport(ctx: &egui::Context, shared: &Arc<Mutex<Shared>>) {
         .with_position([x, y])
         .with_inner_size([w, h])
         .with_decorations(false)
-        .with_transparent(true)
         .with_always_on_top()
         .with_taskbar(false)
         .with_mouse_passthrough(true);
@@ -185,6 +221,15 @@ pub fn show_mask_viewport(ctx: &egui::Context, shared: &Arc<Mutex<Shared>>) {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
+                let full = egui::Rect::from_min_size(ui.min_rect().min, egui::vec2(w, h));
+                if let Some(tex) = &texture {
+                    ui.painter().image(
+                        tex.id(),
+                        full,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                }
                 let painter = ui.painter();
                 for line in &lines {
                     let (lx, ly, lw, lh) = line.rect_frac;
@@ -205,4 +250,30 @@ pub fn show_mask_viewport(ctx: &egui::Context, shared: &Arc<Mutex<Shared>>) {
                 }
             });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::looks_like_ui_noise;
+
+    #[test]
+    fn filters_own_app_name() {
+        assert!(looks_like_ui_noise("Anveesa Polyglot"));
+        assert!(looks_like_ui_noise("  Anveesa Polyglot  "));
+    }
+
+    #[test]
+    fn filters_short_ascii_glyph_misreads() {
+        assert!(looks_like_ui_noise("K"));
+        assert!(looks_like_ui_noise("00"));
+    }
+
+    #[test]
+    fn keeps_real_short_content() {
+        // single/double CJK characters are often meaningful (e.g. "十" = ten,
+        // "京" = capital) — must not be swept up by the short-fragment filter
+        assert!(!looks_like_ui_noise("十"));
+        assert!(!looks_like_ui_noise("北京"));
+        assert!(!looks_like_ui_noise("Beijing"));
+    }
 }

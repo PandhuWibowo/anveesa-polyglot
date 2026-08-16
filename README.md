@@ -63,7 +63,14 @@ Requires:
 - `cmake` (`brew install cmake`) to build whisper.cpp the first time
 - the same **Screen Recording** permission (system audio rides on it)
 
-`stt_lang` sets the spoken language ("zh" default, "auto" to detect).
+**Spoken languages**: in ⚙ Settings, pick as many languages as you expect to
+hear (Mandarin, Japanese, Korean, English, …) — Whisper detects which one is
+actually spoken per utterance, so mixed-language meetings just work, with no
+real cap on how many you select. Pick exactly one only if every speaker uses
+that language, for slightly better accuracy (a fixed hint vs. per-segment
+detection). A "+ other code" field covers any of Whisper's ~99 supported
+languages not in the quick list. Stored in `config.toml` as `stt_lang`,
+comma-separated (e.g. `"zh,ja,ko"`) or `"auto"`.
 Segments are cut on ~0.7 s pauses, capped at 8 s, so captions appear a
 moment after someone stops speaking; translation fills in a few seconds later.
 
@@ -179,6 +186,14 @@ re-masking every `interval_secs` if the visible text changed.
   cycle (like the spreadsheet path) — fast, but note it translates
   *everything* visible with text, including UI chrome, not just the document
   you care about.
+- The overlay's background is the **actual captured frame**, not a live
+  see-through window — true OS-level window transparency across viewports
+  turned out to be unreliable in practice (worked in some window
+  arrangements, rendered solid black in others, depending on what else was
+  on screen). Painting the real screenshot behind the translated boxes is
+  correct every time; the tradeoff is the backdrop only refreshes once per
+  `interval_secs` instead of being truly live — if you scroll mid-cycle, the
+  overlay catches up on the next capture.
 
 ## Live in-place translation for an open Numbers file (Phase 6)
 
